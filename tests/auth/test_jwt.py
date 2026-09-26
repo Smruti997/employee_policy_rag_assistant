@@ -67,7 +67,18 @@ def test_rejects_expired_token() -> None:
 def test_websocket_authenticates_first_frame_and_keeps_session_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.orchestration.models import ChatEvent, DomainCategory, Route, RoutingDecision
+
+    class FakeOrchestrator:
+        async def respond(self, text, user, history=None):
+            decision = RoutingDecision(
+                route=Route.RAG, reasoning="test", extracted_keywords=(),
+                domain_category=DomainCategory.HR,
+            )
+            yield ChatEvent(text="Mock policy response", decision=decision)
+
     monkeypatch.setenv("JWT_SECRET", SECRET)
+    monkeypatch.setattr("app.api.websocket.orchestrator", FakeOrchestrator())
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/chat") as websocket:
@@ -80,13 +91,8 @@ def test_websocket_authenticates_first_frame_and_keeps_session_open(
             }
 
             websocket.send_json({"type": "message", "text": "How much sick leave can I take?"})
-            frame = websocket.receive_json()
-            assert frame["type"] == "stream"
-            while frame.get("type") == "stream":
-                frame = websocket.receive_json()
-            assert frame == {"type": "done"}
-
-
+            assert websocket.receive_json() == {"type": "stream", "text": "Mock policy response"}
+            assert websocket.receive_json() == {"type": "done"}
 
 def test_websocket_rejects_invalid_token_and_closes(
     monkeypatch: pytest.MonkeyPatch,

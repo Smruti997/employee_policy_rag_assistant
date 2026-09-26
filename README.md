@@ -1,4 +1,9 @@
-# Take-Home Assignment — Mini RAG Chatbot Backend
+# employee_policy_rag_assistant
+Employee Chatbot — AI-powered Employee Chatbot with secure JWT authentication and RBAC-based access control before RAG retrieval. Enables employees to securely query internal policies, documents, and organizational information using context-aware RAG workflows.
+
+## Assignment brief
+
+### Take-Home Assignment — Mini RAG Chatbot Backend
 
 **Time budget:** ~4–6 hours of focused work. You have 3 days to submit.
 
