@@ -1,10 +1,13 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone, timedelta
 
 from app.auth.models import AuthenticatedUser
 from app.orchestration.chat import ChatOrchestrator
 from app.orchestration.models import ChatEvent, DomainCategory, Route, RoutingDecision
 
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 _RAG_DECISION = RoutingDecision(
     route=Route.RAG, reasoning="test", extracted_keywords=(), domain_category=DomainCategory.HR,
@@ -23,16 +26,6 @@ _DIRECT_DECISION = RoutingDecision(
 )
 
 
-class FakeRouter:
-    def __init__(self, decision: RoutingDecision) -> None:
-        self.decision = decision
-        self.messages = []
-
-    async def route(self, message: str) -> RoutingDecision:
-        self.messages.append(message)
-        return self.decision
-
-
 def _make_user() -> AuthenticatedUser:
     return AuthenticatedUser(user_id="emp-001", email="emp@test.com", department="hr", level=1)
 
@@ -42,19 +35,32 @@ async def test_chat_orchestrator_rag_response() -> None:
     from app.data.qdrant_store import SearchResult
 
     mock_retriever = MagicMock()
-    mock_retriever.search.return_value = [SearchResult(
-        chunk_id="c1", text="Employees get 15 days of sick leave per calendar year.",
-        source_file="hr_policy.pdf", department="hr", access_level=1, page=2, score=0.92,
-    )]
+    mock_retriever.search = AsyncMock(return_value=[
+        SearchResult(
+            chunk_id="c1",
+            text="Employees get 15 days of sick leave per calendar year.",
+            source_file="hr_policy.pdf",
+            department="hr",
+            access_level=1,
+            page=2,
+            score=0.92,
+        )
+    ])
 
-    class FakeLLM:
-        async def stream(self, messages):
-            yield "You get "
-            yield "15 days "
-            yield "of sick leave."
+    mock_llm = MagicMock()
+
+    async def mock_stream(messages):
+        yield "You get "
+        yield "15 days "
+        yield "of sick leave."
+
+    mock_llm.stream = mock_stream
+
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _RAG_DECISION
 
     orchestrator = ChatOrchestrator(
-        intent_router=FakeRouter(_RAG_DECISION), retriever=mock_retriever, llm_provider=FakeLLM(),
+        intent_router=mock_router, retriever=mock_retriever, llm_provider=mock_llm,
     )
     events = [e async for e in orchestrator.respond("How many days of sick leave can I take?", _make_user())]
     assert len(events) == 3
@@ -66,19 +72,27 @@ async def test_chat_orchestrator_rag_passes_history() -> None:
     from app.data.qdrant_store import SearchResult
 
     mock_retriever = MagicMock()
-    mock_retriever.search.return_value = [SearchResult(
-        chunk_id="c1", text="Some policy text.", source_file="p.pdf",
-        department="hr", access_level=1, page=1, score=0.9,
-    )]
+    mock_retriever.search = AsyncMock(return_value=[
+        SearchResult(
+            chunk_id="c1", text="Some policy text.", source_file="p.pdf",
+            department="hr", access_level=1, page=1, score=0.9,
+        )
+    ])
     captured_messages = {}
 
-    class FakeLLM:
-        async def stream(self, messages):
-            captured_messages["msgs"] = messages
-            yield "answer"
+    mock_llm = MagicMock()
+
+    async def mock_stream(messages):
+        captured_messages["msgs"] = messages
+        yield "answer"
+
+    mock_llm.stream = mock_stream
+
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _RAG_DECISION
 
     orchestrator = ChatOrchestrator(
-        intent_router=FakeRouter(_RAG_DECISION), retriever=mock_retriever, llm_provider=FakeLLM(),
+        intent_router=mock_router, retriever=mock_retriever, llm_provider=mock_llm,
     )
     history = [{"role": "user", "content": "prev question"}, {"role": "assistant", "content": "prev answer"}]
     [e async for e in orchestrator.respond("follow up", _make_user(), history=history)]
@@ -92,13 +106,17 @@ async def test_chat_orchestrator_rag_passes_history() -> None:
 
 @pytest.mark.anyio
 async def test_chat_orchestrator_personal_response() -> None:
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _PERSONAL_DECISION
+
     mock_personal = MagicMock()
 
     async def mock_execute(user, decision, question="", history=None):
         yield ChatEvent(text="Your manager is John Smith.", decision=decision)
 
     mock_personal.execute = mock_execute
-    orchestrator = ChatOrchestrator(intent_router=FakeRouter(_PERSONAL_DECISION), personal_tool=mock_personal)
+
+    orchestrator = ChatOrchestrator(intent_router=mock_router, personal_tool=mock_personal)
     events = [e async for e in orchestrator.respond("Who is my direct manager?", _make_user())]
     assert len(events) == 1
     assert "John Smith" in events[0].text
@@ -106,23 +124,81 @@ async def test_chat_orchestrator_personal_response() -> None:
 
 @pytest.mark.anyio
 async def test_chat_orchestrator_out_of_scope() -> None:
-    orchestrator = ChatOrchestrator(intent_router=FakeRouter(_DIRECT_DECISION))
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _DIRECT_DECISION
+
+    orchestrator = ChatOrchestrator(intent_router=mock_router)
     events = [e async for e in orchestrator.respond("What is the capital of France?", _make_user())]
     assert len(events) == 1
-    assert events[0].text == "I can help with company policies and your employee information."
+    assert events[0].text == "unable to provide answer"
 
 
 @pytest.mark.anyio
-async def test_chat_orchestrator_greeting() -> None:
-    orchestrator = ChatOrchestrator(intent_router=FakeRouter(_GREETING_DECISION))
-    events = [e async for e in orchestrator.respond("Hello!", _make_user())]
+async def test_chat_orchestrator_error_route_returns_the_fallback_message() -> None:
+    mock_router = AsyncMock()
+    mock_router.route.return_value = RoutingDecision(
+        route=Route.ERROR,
+        reasoning="classification failed",
+        extracted_keywords=(),
+        domain_category=DomainCategory.GENERAL,
+    )
+
+    orchestrator = ChatOrchestrator(intent_router=mock_router)
+    events = [e async for e in orchestrator.respond("anything", _make_user())]
+
     assert len(events) == 1
-    assert "How can I help" in events[0].text
+    assert "unable to generate the response" in events[0].text
+    assert events[0].is_error is True
+
+
+@pytest.mark.anyio
+async def test_chat_orchestrator_greeting_morning() -> None:
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _GREETING_DECISION
+
+    morning = datetime(2026, 1, 1, 9, 0, 0, tzinfo=_IST)
+    with patch("app.orchestration.chat.datetime") as mock_dt:
+        mock_dt.now.return_value = morning
+        orchestrator = ChatOrchestrator(intent_router=mock_router)
+        events = [e async for e in orchestrator.respond("Hello!", _make_user())]
+    assert len(events) == 1
+    assert "Morning" in events[0].text
+
+
+@pytest.mark.anyio
+async def test_chat_orchestrator_greeting_afternoon() -> None:
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _GREETING_DECISION
+
+    afternoon = datetime(2026, 1, 1, 14, 0, 0, tzinfo=_IST)
+    with patch("app.orchestration.chat.datetime") as mock_dt:
+        mock_dt.now.return_value = afternoon
+        orchestrator = ChatOrchestrator(intent_router=mock_router)
+        events = [e async for e in orchestrator.respond("Hi there", _make_user())]
+    assert len(events) == 1
+    assert "Afternoon" in events[0].text
+
+
+@pytest.mark.anyio
+async def test_chat_orchestrator_greeting_evening() -> None:
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _GREETING_DECISION
+
+    evening = datetime(2026, 1, 1, 19, 0, 0, tzinfo=_IST)
+    with patch("app.orchestration.chat.datetime") as mock_dt:
+        mock_dt.now.return_value = evening
+        orchestrator = ChatOrchestrator(intent_router=mock_router)
+        events = [e async for e in orchestrator.respond("Good evening!", _make_user())]
+    assert len(events) == 1
+    assert "Evening" in events[0].text
 
 
 @pytest.mark.anyio
 async def test_chat_orchestrator_closure_response() -> None:
-    orchestrator = ChatOrchestrator(intent_router=FakeRouter(_CLOSURE_DECISION))
+    mock_router = AsyncMock()
+    mock_router.route.return_value = _CLOSURE_DECISION
+
+    orchestrator = ChatOrchestrator(intent_router=mock_router)
     events = [e async for e in orchestrator.respond("That's all, thank you.", _make_user())]
     assert len(events) == 1
     assert "Thank you for connecting" in events[0].text

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Protocol, runtime_checkable
 
 
@@ -25,12 +26,16 @@ class SentenceTransformerEmbedder:
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
         self._model_name = model_name
         self._model = None  # lazy load
+        self._load_lock = threading.Lock()
 
     def _load(self) -> None:
         if self._model is None:
-            from sentence_transformers import SentenceTransformer
+            # Guarded so several concurrent first calls load the model once.
+            with self._load_lock:
+                if self._model is None:
+                    from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self._model_name, device="cpu")
+                    self._model = SentenceTransformer(self._model_name, device="cpu")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self._load()
@@ -49,8 +54,4 @@ class SentenceTransformerEmbedder:
 
 
 def default_embedder() -> SentenceTransformerEmbedder:
-    import os
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    return SentenceTransformerEmbedder(os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"))
+    return SentenceTransformerEmbedder()

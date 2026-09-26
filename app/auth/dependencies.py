@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import WebSocket
@@ -14,7 +15,12 @@ from app.core.exceptions import AuthenticationError
 
 async def authenticate_websocket(websocket: WebSocket) -> AuthenticatedUser:
     """Read and validate the mandatory first WebSocket authentication frame."""
-    message: Any = await websocket.receive_json()
+    raw = await websocket.receive_text()
+    try:
+        message: Any = json.loads(raw)
+    except ValueError:
+        raise AuthenticationError("Auth frame is not valid JSON")
+
     if not isinstance(message, dict) or message.get("type") != "auth":
         raise AuthenticationError("First message must be an auth message")
 

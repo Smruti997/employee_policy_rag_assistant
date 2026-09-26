@@ -13,14 +13,13 @@ role-based access control at vector-query time and supports one personal-data to
 | Authorization | Qdrant payload filter built from verified claims | Unauthorized chunks never reach Python or the LLM. |
 | Vector store | Qdrant | Combines semantic similarity search with metadata filtering. |
 | Embeddings | `BAAI/bge-small-en-v1.5` via a provider interface | Free local semantic model for this small corpus. |
-| LLM | Pluggable streaming adapter; OpenRouter is the documented default | The configured model classifies intent and streams answers without coupling the app to one vendor. |
+| LLM | Pluggable streaming adapter; Groq as the initial provider | Fast free-tier model without coupling the app to a vendor. |
 | OCR | PyMuPDF extraction with rendered-page/Tesseract fallback | Handles text PDFs and the scanned executive document. |
 | Employee data | Local mock MCP server | Makes the tool boundary realistic and self-contained. |
-| Observability | Python logging for internal failures | Structured tracing and metrics remain a future improvement. |
+| Observability | JSON logs, OpenTelemetry spans, metrics | Makes security and latency inspectable. |
 
-Authentication, ingestion, retrieval, orchestration, and mock employee context
-are implemented. This design describes their contracts; tracing and metrics are
-not currently implemented.
+The `auth` layer is implemented. The rest of this document is the build contract
+for `data`, `orchestration`, and `observability`.
 
 ## High-Level Design
 
@@ -51,10 +50,10 @@ flowchart LR
 | --- | --- | --- |
 | `api` | WebSocket protocol, connection lifecycle, outgoing events | Does not trust any client frame. |
 | `auth` | Verify signature/claims and derive access scope | Claims become trusted only after verification. |
-| `orchestration` | Classify intent, retrieve context, dispatch tools, stream response | Receives only a verified user, never client access fields. |
+| `orchestration` | Retrieve context, call LLM/tools, stream response | Receives only a verified user, never client access fields. |
 | `data` | Ingest, embed, query Qdrant, expose mock MCP data | Retriever requires an access scope for every query. |
 | `core` | Configuration, exceptions, telemetry wiring | Holds no access-policy decisions. |
-| LLM provider | Classifies intent and generates text | Receives only authorized policy excerpts and the current user's mock context. |
+| LLM provider | Generates text and requests the approved tool | Receives only authorized policy context. |
 
 ### Connection and request lifecycle
 
@@ -122,6 +121,7 @@ app/
 │   ├── embeddings.py
 │   ├── qdrant_store.py
 │   ├── retriever.py
+│   ├── sample_data.py
 │   ├── mock_mcp_server.py
 │   └── mock_mcp_client.py
 └── core/
@@ -184,13 +184,13 @@ level. It never expands an HR user's scope into finance or executive content.
 The ingestion entry point is an explicit CLI:
 
 ```text
-python -m app.data.ingestion --source-dir app/docs --qdrant-path ./app/qdrant_db --recreate-collection
+python -m app.data.ingestion --source-dir docs --recreate-collection
 ```
 
 For each PDF it derives department and fixed access level from the file mapping,
 extracts each page with PyMuPDF, and uses OCR only for pages with insufficient
 native text. Text is normalized while preserving pages, then chunked into roughly
-450-word chunks with 75-word overlap, bounded by policy headings and preferring paragraph and sentence
+450-token chunks with 75-token overlap, preferring paragraph and sentence
 boundaries. This keeps a policy clause coherent while retaining adjacent context.
 
 Each Qdrant point holds a vector and this payload:
@@ -226,14 +226,16 @@ implementation without changing orchestration code or the RBAC policy.
 ### Orchestration and provider contracts
 
 `ChatOrchestrator.respond(text, user)` is an async generator of chat events. It
-uses an async LLM router for message classification, dispatches the matching
-application tool, and streams a grounded response. Synchronous embedding and
-Qdrant operations run in a worker thread. It does not parse tokens or implement
-RBAC.
+owns message classification, retrieval, prompt construction, LLM tool calls, and
+provider failure recovery. It does not parse tokens or implement RBAC.
 
 ```python
 class LLMProvider(Protocol):
-    async def stream(self, messages: list[ChatMessage]) -> AsyncIterator[str]: ...
+    async def stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[ToolDefinition],
+    ) -> AsyncIterator[LLMEvent]: ...
 
 class ChatOrchestrator:
     async def respond(
@@ -246,27 +248,39 @@ the authorized top results, the question, and source metadata. The system prompt
 instructs the model to answer only from supplied context and to say when the
 context is insufficient.
 
-For a personal question, the LLM classification selects the personal-data route.
-The application invokes only `get_employee_context` and supplies `user.user_id`
-from the verified session. No employee identifier is accepted from the model or
-client, preventing cross-user data access.
+For a personal question, the model can request only `get_employee_context`. The
+orchestrator validates the call and substitutes `user.user_id` for any model or
+client-provided identifier, preventing cross-user data access.
 
 ### Mock MCP server and parallel context tool
 
-The employee-context operation takes identity from the authenticated session:
+The LLM tool schema contains no user ID because identity comes from the session:
 
 ```json
 {
   "name": "get_employee_context",
-  "parameters": {"user_id": "verified AuthenticatedUser.user_id"}
+  "parameters": {"type": "object", "properties": {}, "additionalProperties": false}
 }
 ```
 
-`data/mock_mcp_server.py` exposes three internal MCP operations:
+`data/mock_mcp_server.py` exposes three internal MCP operations, each backed by
+its own workbook under `app/sample_data` and keyed by the `sub` column:
 
-- `get_profile(user_id)` returns `{name, grade}` after one second.
-- `get_manager(user_id)` returns `{manager}` after one second.
-- `get_team(user_id)` returns `{team_size, team_name}` after one second.
+| operation | table | file | returns |
+| --- | --- | --- | --- |
+| `get_profile(user_id)` | `profile` | `profile.xlsx` | `{name, grade}` |
+| `get_manager(user_id)` | `manager` | `manager.xlsx` | `{manager}` |
+| `get_team(user_id)` | `team` | `team info.xlsx` | `{team_size, team_name}` |
+
+Each operation waits one second, so the three overlap and the tool call finishes
+in about one second rather than three. Because each concurrent read touches a
+different file, every table is parsed exactly once. (When all the columns lived
+in a single sheet the reads still overlapped, but all three threads raced into
+the same cold cache and parsed that one sheet three times.)
+
+`data/sample_data.py` parses each table once and caches it under a lock; parsing
+happens in a worker thread so the event loop is never blocked. An unknown
+employee id raises `EmployeeNotFoundError` rather than returning invented data.
 
 `orchestration/tools.py` calls them with `asyncio.gather` through
 `data/mock_mcp_client.py`:
@@ -299,9 +313,33 @@ prompts, and document bodies must never be put in client errors.
 
 ### Observability design
 
-`core/observability.py` configures structured JSON logs, OpenTelemetry spans, and
-metrics. Each connection receives a random `connection_id`; each message receives
-a `request_id`. Those identifiers are carried as log fields and trace attributes.
+**Implemented — turn log.** `core/observability.py` writes one JSON object per
+line per chat turn to `logs/chat_turns.jsonl` (override with `CHAT_LOG_FILE`) and
+mirrors it to stderr. Every line in a turn shares a `turn_id`, which is held in a
+`ContextVar` set by the orchestrator, so tool code does not need it threaded
+through its signatures.
+
+| Event | Emitted by | Carries |
+| --- | --- | --- |
+| `turn.start` | orchestrator, before the router | user id, department, level, query, history depth |
+| `router.result` | orchestrator, after the router | route, domain category, reasoning, latency |
+| `tool.selected` | orchestrator, at dispatch | tool name (`policy_rag`, `personal_assistant`, `greeting`, `closure`, `none`) |
+| `rag.input` | `PolicyRAGTool` | question, history depth, department scope, max access level, limit |
+| `rag.retrieved` | `PolicyRAGTool` | chunk count, latency, source file/page/score per chunk |
+| `rag.output` | `PolicyRAGTool` | answer text, character count, latency |
+| `rag.retrieve.error` / `rag.output.error` | `PolicyRAGTool` | safe error category, latency |
+| `employee_db.read.start` | `PersonalAssistantTool`, before the read | user id, `mode=parallel`, tables being read |
+| `employee_db.read.done` | `PersonalAssistantTool`, after the read | latency, the resolved context |
+| `employee_db.read.error` | `PersonalAssistantTool` | user id, the failing lookup, latency |
+| `personal.output` | `PersonalAssistantTool` | answer text, latency |
+| `turn.end` | orchestrator, in a `finally` | route, total latency |
+
+Logging never raises into a turn: a write failure is reported to stderr and the
+chat continues.
+
+**Planned.** OpenTelemetry spans and metrics (below) are not implemented; the
+turn log is the current observability surface. When spans are added, they should
+reuse the same `turn_id` as a trace attribute.
 
 | Signal | Attributes or labels | Purpose |
 | --- | --- | --- |

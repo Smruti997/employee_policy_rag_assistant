@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.auth.dependencies import authenticate_websocket
-from app.core.exceptions import AuthenticationError, ChatServiceError
+from app.core.exceptions import AuthenticationError
 from app.orchestration.chat import ChatOrchestrator
 
 
@@ -60,19 +60,16 @@ async def chat(websocket: WebSocket) -> None:
             continue
 
         reply_parts: list[str] = []
-        try:
-            async for event in orchestrator.respond(text, user, history=history):
+        errored = False
+        async for event in orchestrator.respond(text, user, history=history):
+            if event.is_error:
+                errored = True
+                await websocket.send_json({"type": "error", "message": event.text})
+            else:
                 reply_parts.append(event.text)
                 await websocket.send_json({"type": "stream", "text": event.text})
-        except ChatServiceError as exc:
-            await websocket.send_json({"type": "error", "message": str(exc)})
-            continue
-        except Exception:
-            await websocket.send_json(
-                {"type": "error", "message": "Something went wrong. Please try again."}
-            )
-            continue
-        await websocket.send_json({"type": "done"})
+        if not errored:
+            await websocket.send_json({"type": "done"})
 
         history.append({"role": "user", "content": text})
         history.append({"role": "assistant", "content": "".join(reply_parts)})

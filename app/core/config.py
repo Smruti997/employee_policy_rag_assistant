@@ -13,11 +13,8 @@ from app.core.exceptions import ConfigurationError
 @dataclass(frozen=True, slots=True)
 class Settings:
     jwt_secret: str
-    llm_provider: str = "openrouter"
-    llm_api_key: str = ""
-    llm_model: str = "meta-llama/llama-3.3-70b-instruct:free"
-    llm_base_url: str = "https://openrouter.ai/api/v1"
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    router_model: str = "qwen/qwen3-30b-a3b-instruct-2507"
+    router_max_tokens: int = 512
     qdrant_path: str = "./app/qdrant_db"
     qdrant_url: str = "http://localhost:6333"
 
@@ -28,28 +25,30 @@ class Settings:
         if len(secret) < 32:
             raise ConfigurationError("JWT_SECRET must be at least 32 characters long")
 
-        provider = os.getenv("LLM_PROVIDER", "openrouter").strip().lower()
-        provider_settings = {
-            "openrouter": (os.getenv("OPENROUTER_API_KEY", ""), os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"), "https://openrouter.ai/api/v1"),
-            "groq": (os.getenv("GROQ_API_KEY", ""), os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), "https://api.groq.com/openai/v1"),
-            "gemini": (os.getenv("GEMINI_API_KEY", ""), os.getenv("GEMINI_MODEL", "gemini-2.0-flash"), "https://generativelanguage.googleapis.com"),
-            "ollama": ("", os.getenv("OLLAMA_MODEL", "llama3.2"), os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")),
-        }
-        llm_api_key, llm_model, llm_base_url = provider_settings.get(
-            provider, ("", "", "")
-        )
+        router_model = os.getenv("ROUTER_MODEL", "qwen/qwen3-30b-a3b-instruct-2507")
+        router_max_tokens = _positive_int("ROUTER_MAX_TOKENS", 512)
         qdrant_path = os.getenv("QDRANT_PATH", "./app/qdrant_db")
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
 
         return cls(
             jwt_secret=secret,
-            llm_provider=provider,
-            llm_api_key=llm_api_key,
-            llm_model=llm_model,
-            llm_base_url=llm_base_url,
-            embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5"),
+            router_model=router_model,
+            router_max_tokens=router_max_tokens,
             qdrant_path=qdrant_path,
             qdrant_url=qdrant_url,
         )
+
+
+def _positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be an integer, got {raw!r}") from exc
+    if value <= 0:
+        raise ConfigurationError(f"{name} must be positive, got {value}")
+    return value
 
 

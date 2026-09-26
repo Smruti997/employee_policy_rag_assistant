@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.auth.rbac import AccessScope
 from app.data.embeddings import EmbeddingProvider, default_embedder
 from app.data.qdrant_store import QdrantStore, SearchResult
@@ -18,7 +20,7 @@ class Retriever:
         self._store = store or _default_store()
         self._embedder = embedder or default_embedder()
 
-    def search(
+    async def search(
         self,
         question: str,
         scope: AccessScope,
@@ -27,12 +29,14 @@ class Retriever:
         """Embed *question*, apply RBAC filter, return top-*limit* chunks.
 
         The RBAC filter is passed directly to Qdrant — results are never
-        filtered in Python after retrieval.
+        filtered in Python after retrieval. Embedding (CPU inference) and the
+        Qdrant query are blocking, so both run in a worker thread to keep the
+        WebSocket event loop free.
         """
-        vectors = self._embedder.embed([question])
+        vectors = await asyncio.to_thread(self._embedder.embed, [question])
         query_vector = vectors[0]
         rbac_filter = scope.qdrant_filter()
-        return self._store.search(query_vector, rbac_filter, limit=limit)
+        return await asyncio.to_thread(self._store.search, query_vector, rbac_filter, limit)
 
 
 _STORE_INSTANCE: QdrantStore | None = None

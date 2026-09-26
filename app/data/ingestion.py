@@ -109,10 +109,6 @@ def run(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     source_dir = Path(args.source_dir)
 
-    if args.batch_size < 1:
-        print("[ERROR] --batch-size must be at least 1", file=sys.stderr)
-        sys.exit(2)
-
     if not source_dir.exists():
         print(f"[ERROR] Source directory not found: {source_dir.resolve()}", file=sys.stderr)
         sys.exit(1)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -146,7 +148,8 @@ def test_retriever_builds_rbac_filter():
     retriever = Retriever(store=mock_store, embedder=mock_embedder)
     scope = AccessScope(departments=("company", "hr"), maximum_access_level=2)
 
-    retriever.search("sick leave", scope)
+    # search is async: it offloads embedding and the store query off the loop.
+    asyncio.run(retriever.search("sick leave", scope))
 
     mock_store.search.assert_called_once()
     args, kwargs = mock_store.search.call_args

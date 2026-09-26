@@ -35,22 +35,6 @@ POLICY EXCERPTS:
 ---
 """
 
-_COMBINED_SYSTEM = """\
-You are an internal employee assistant. Answer each part of the question using
-only the matching trusted context below. Use EMPLOYEE CONTEXT only for personal
-facts and POLICY EXCERPTS only for company rules. Do not infer one from the
-other. If either context lacks its answer, say so clearly. Cite policy source
-document and page for policy claims. Do not speculate.
-
----
-EMPLOYEE CONTEXT:
-{employee_context}
-
-POLICY EXCERPTS:
-{policy_context}
----
-"""
-
 
 def build_personal_messages(
     question: str,
@@ -71,7 +55,6 @@ def build_rag_messages(
     question: str,
     chunks: list[SearchResult],
     history: list[dict[str, str]] | None = None,
-    employee_context: dict[str, object] | None = None,
 ) -> list[dict[str, str]]:
     """Return an OpenAI-style messages list for a RAG completion.
 
@@ -90,14 +73,7 @@ def build_rag_messages(
             )
         context = "\n\n".join(parts)
 
-    if employee_context is not None:
-        personal = "\n".join(f"- {key}: {value}" for key, value in employee_context.items())
-        system_prompt = _COMBINED_SYSTEM.format(
-            employee_context=personal or "(No employee context available.)",
-            policy_context=context,
-        )
-    else:
-        system_prompt = _RAG_SYSTEM.format(context=context)
+    system_prompt = _RAG_SYSTEM.format(context=context)
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)

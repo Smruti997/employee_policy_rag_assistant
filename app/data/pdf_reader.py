@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-import pytesseract
-
-if tesseract_cmd := os.getenv("TESSERACT_CMD"):
-    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
 from app.core.exceptions import OcrUnavailableError
 

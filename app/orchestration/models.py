@@ -13,6 +13,7 @@ class Route(str, Enum):
     GREETING = "GREETING"
     CLOSURE = "CLOSURE"
     DIRECT_RESPONSE = "DIRECT_RESPONSE"
+    ERROR = "ERROR"
 
 
 class DomainCategory(str, Enum):
@@ -31,7 +32,7 @@ class RoutingDecision:
     domain_category: DomainCategory
 
     def as_dict(self) -> dict[str, object]:
-        """Return the JSON-compatible schema emitted by the LLM intent router."""
+        """Return the JSON-compatible schema used by a future LLM router."""
         return {
             "route": self.route.value,
             "reasoning": self.reasoning,
@@ -46,3 +47,4 @@ class ChatEvent:
 
     text: str
     decision: RoutingDecision
+    is_error: bool = False

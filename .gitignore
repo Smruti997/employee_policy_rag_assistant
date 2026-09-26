@@ -11,5 +11,7 @@ app/qdrant_db/
 .vscode/
 .pytest_cache/
 .commandcode/
+logs/
 codex-md.py
 20260925_add-rbac-authentication-layer.md
+tests/~$*.xlsx

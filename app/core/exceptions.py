@@ -13,5 +13,9 @@ class OcrUnavailableError(RuntimeError):
     """Raised when a scanned page needs OCR but the Tesseract binary is missing."""
 
 
-class ChatServiceError(RuntimeError):
-    """Safe, user-facing failure raised while processing an authenticated turn."""
+class SampleDataError(RuntimeError):
+    """Raised when a mock workbook is missing, empty, or missing required columns."""
+
+
+class EmployeeNotFoundError(LookupError):
+    """Raised when the mock data holds no record for the requested employee."""

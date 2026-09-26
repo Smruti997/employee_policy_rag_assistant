@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import uuid4
 
 
 COLLECTION_NAME = "policy_docs"
@@ -99,9 +99,7 @@ class QdrantStore:
 
         points = [
             PointStruct(
-                # Stable IDs make rerunning ingestion an upsert instead of
-                # duplicating the same chunks when --recreate-collection is off.
-                id=str(uuid5(NAMESPACE_URL, chunk.chunk_id)),
+                id=str(uuid4()),
                 vector=vector,
                 payload={
                     "chunk_id": chunk.chunk_id,

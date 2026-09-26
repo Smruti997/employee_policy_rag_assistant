@@ -7,7 +7,11 @@ Providers supported:
 - Ollama      (OLLAMA_BASE_URL + OLLAMA_MODEL, fully local)
 
 All implement the same LLMProvider protocol:
-    async def stream(messages) -> AsyncIterator[str]
+    async def stream(messages, max_tokens=None) -> AsyncIterator[str]
+
+``max_tokens`` is optional but important on metered providers: a request that
+omits it asks for the model's full output window, and OpenRouter pre-authorises
+that many tokens, which a low-balance key cannot cover (HTTP 402).
 """
 
 from __future__ import annotations
@@ -19,7 +23,27 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]: ...
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]: ...
+
+
+async def complete(
+    provider: LLMProvider,
+    messages: list[dict[str, str]],
+    max_tokens: int | None = None,
+) -> str:
+    """Return a full completion by collecting a provider's stream.
+
+    One-shot callers (like the intent router) want the whole answer; collecting
+    the stream keeps a single provider interface rather than a second one.
+    """
+    parts: list[str] = []
+    async for token in provider.stream(messages, max_tokens=max_tokens):
+        parts.append(token)
+    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +59,9 @@ class OpenRouterProvider:
         self._api_key = api_key
         self._model = model
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], max_tokens: int | None = None
+    ) -> AsyncIterator[str]:
         import httpx
 
         headers = {
@@ -43,11 +69,13 @@ class OpenRouterProvider:
             "Content-Type": "application/json",
             "HTTP-Referer": "https://github.com/miniragchatbot",
         }
-        payload = {
+        payload: dict[str, object] = {
             "model": self._model,
             "messages": messages,
             "stream": True,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream("POST", self.BASE_URL, headers=headers, json=payload) as resp:
                 resp.raise_for_status()
@@ -77,11 +105,15 @@ class GroqProvider:
         self._api_key = api_key
         self._model = model
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], max_tokens: int | None = None
+    ) -> AsyncIterator[str]:
         import httpx
 
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
-        payload = {"model": self._model, "messages": messages, "stream": True}
+        payload: dict[str, object] = {"model": self._model, "messages": messages, "stream": True}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream("POST", self.BASE_URL, headers=headers, json=payload) as resp:
                 resp.raise_for_status()
@@ -108,7 +140,9 @@ class GeminiProvider:
         self._api_key = api_key
         self._model = model
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], max_tokens: int | None = None
+    ) -> AsyncIterator[str]:
         import httpx
 
         # Convert OpenAI-style messages to Gemini contents
@@ -119,7 +153,9 @@ class GeminiProvider:
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{self._model}:streamGenerateContent?alt=sse&key={self._api_key}"
         )
-        payload = {"contents": contents}
+        payload: dict[str, object] = {"contents": contents}
+        if max_tokens is not None:
+            payload["generationConfig"] = {"maxOutputTokens": max_tokens}
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream("POST", url, json=payload) as resp:
                 resp.raise_for_status()
@@ -145,11 +181,15 @@ class OllamaProvider:
         self._base_url = base_url.rstrip("/")
         self._model = model
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], max_tokens: int | None = None
+    ) -> AsyncIterator[str]:
         import httpx
 
         url = f"{self._base_url}/api/chat"
-        payload = {"model": self._model, "messages": messages, "stream": True}
+        payload: dict[str, object] = {"model": self._model, "messages": messages, "stream": True}
+        if max_tokens is not None:
+            payload["options"] = {"num_predict": max_tokens}
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream("POST", url, json=payload) as resp:
                 resp.raise_for_status()
@@ -169,32 +209,34 @@ class OllamaProvider:
 # Factory: build provider from environment
 # ---------------------------------------------------------------------------
 
-def provider_from_env() -> LLMProvider:
-    """Build the explicitly selected LLM provider from environment variables."""
+def provider_from_env(model: str | None = None) -> LLMProvider:
+    """Return the first configured LLM provider found in environment variables.
+
+    *model* overrides the provider's default model, so the intent router can run
+    on a different model than the answer path.
+    """
     import os
     from dotenv import load_dotenv
 
     load_dotenv()
 
-    selected = os.getenv("LLM_PROVIDER", "openrouter").strip().lower()
-    if selected == "openrouter":
-        key = os.getenv("OPENROUTER_API_KEY")
-        if not key:
-            raise RuntimeError("Set OPENROUTER_API_KEY for LLM_PROVIDER=openrouter")
-        return OpenRouterProvider(key, os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"))
-    if selected == "groq":
-        key = os.getenv("GROQ_API_KEY")
-        if not key:
-            raise RuntimeError("Set GROQ_API_KEY for LLM_PROVIDER=groq")
-        return GroqProvider(key, os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"))
-    if selected == "gemini":
-        key = os.getenv("GEMINI_API_KEY")
-        if not key:
-            raise RuntimeError("Set GEMINI_API_KEY for LLM_PROVIDER=gemini")
-        return GeminiProvider(key, os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
-    if selected == "ollama":
-        return OllamaProvider(
-            os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            os.getenv("OLLAMA_MODEL", "llama3.2"),
-        )
-    raise RuntimeError("LLM_PROVIDER must be openrouter, groq, gemini, or ollama")
+    if key := os.getenv("OPENROUTER_API_KEY"):
+        model = model or os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct")
+        return OpenRouterProvider(api_key=key, model=model)
+
+    if key := os.getenv("GROQ_API_KEY"):
+        model = model or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        return GroqProvider(api_key=key, model=model)
+
+    if key := os.getenv("GEMINI_API_KEY"):
+        model = model or os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        return GeminiProvider(api_key=key, model=model)
+
+    if base_url := os.getenv("OLLAMA_BASE_URL"):
+        model = model or os.getenv("OLLAMA_MODEL", "llama3.2")
+        return OllamaProvider(base_url=base_url, model=model)
+
+    raise RuntimeError(
+        "No LLM provider configured. Set one of: OPENROUTER_API_KEY, GROQ_API_KEY, "
+        "GEMINI_API_KEY, or OLLAMA_BASE_URL in your .env file."
+    )

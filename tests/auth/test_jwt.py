@@ -67,18 +67,7 @@ def test_rejects_expired_token() -> None:
 def test_websocket_authenticates_first_frame_and_keeps_session_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.orchestration.models import ChatEvent, DomainCategory, Route, RoutingDecision
-
-    class FakeOrchestrator:
-        async def respond(self, text, user, history=None):
-            decision = RoutingDecision(
-                route=Route.RAG, reasoning="test", extracted_keywords=(),
-                domain_category=DomainCategory.HR,
-            )
-            yield ChatEvent(text="Mock policy response", decision=decision)
-
     monkeypatch.setenv("JWT_SECRET", SECRET)
-    monkeypatch.setattr("app.api.websocket.orchestrator", FakeOrchestrator())
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws/chat") as websocket:
@@ -91,8 +80,13 @@ def test_websocket_authenticates_first_frame_and_keeps_session_open(
             }
 
             websocket.send_json({"type": "message", "text": "How much sick leave can I take?"})
-            assert websocket.receive_json() == {"type": "stream", "text": "Mock policy response"}
-            assert websocket.receive_json() == {"type": "done"}
+            frame = websocket.receive_json()
+            assert frame["type"] == "stream"
+            while frame.get("type") == "stream":
+                frame = websocket.receive_json()
+            assert frame == {"type": "done"}
+
+
 
 def test_websocket_rejects_invalid_token_and_closes(
     monkeypatch: pytest.MonkeyPatch,
@@ -102,6 +96,51 @@ def test_websocket_rejects_invalid_token_and_closes(
     with TestClient(app) as client:
         with client.websocket_connect("/ws/chat") as websocket:
             websocket.send_json({"type": "auth", "token": "not-a-jwt"})
+            assert websocket.receive_json()["type"] == "auth_failed"
+            with pytest.raises(WebSocketDisconnect) as disconnected:
+                websocket.receive_json()
+
+    assert disconnected.value.code == 1008
+
+
+def test_websocket_rejects_malformed_first_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_text("this is not json")
+            assert websocket.receive_json()["type"] == "auth_failed"
+            with pytest.raises(WebSocketDisconnect) as disconnected:
+                websocket.receive_json()
+
+    assert disconnected.value.code == 1008
+
+
+def test_websocket_rejects_missing_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({"type": "auth"})
+            assert websocket.receive_json()["type"] == "auth_failed"
+            with pytest.raises(WebSocketDisconnect) as disconnected:
+                websocket.receive_json()
+
+    assert disconnected.value.code == 1008
+
+
+def test_websocket_rejects_wrong_first_frame_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", SECRET)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/chat") as websocket:
+            websocket.send_json({"type": "hello", "token": make_token()})
             assert websocket.receive_json()["type"] == "auth_failed"
             with pytest.raises(WebSocketDisconnect) as disconnected:
                 websocket.receive_json()
