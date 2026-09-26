@@ -1,0 +1,15 @@
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+chroma_data/
+qdrant_data/
+app/qdrant_db/
+.DS_Store
+.idea/
+.vscode/
+.pytest_cache/
+.commandcode/
+codex-md.py
+20260925_add-rbac-authentication-layer.md

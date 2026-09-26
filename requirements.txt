@@ -1,0 +1,14 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+PyJWT>=2.10,<3.0
+python-dotenv>=1.0,<2.0
+pytest>=8.0,<9.0
+pytest-anyio>=0.0.0
+httpx>=0.28,<1.0
+# RAG dependencies
+sentence-transformers>=3.0,<4.0
+qdrant-client>=1.12,<2.0
+pymupdf>=1.24,<2.0
+pytesseract>=0.3,<1.0
+Pillow>=10.0
+anyio>=4.0
