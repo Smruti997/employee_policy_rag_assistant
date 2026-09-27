@@ -1,0 +1,2 @@
+{"ts": "2026-09-26T13:56:22.446+00:00", "turn_id": "-", "event": "turn.start", "query": "hello", "level": 1}
+{"ts": "2026-09-26T13:56:22.446+00:00", "turn_id": "-", "event": "turn.end", "latency_ms": 12.5}

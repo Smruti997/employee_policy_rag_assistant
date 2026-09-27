@@ -16,6 +16,13 @@ brew install tesseract          # macOS
 # apt install tesseract-ocr     # Debian/Ubuntu
 ```
 
+On Windows, install Tesseract (for example, with `winget`) and ensure it is
+available on `PATH`:
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR
+```
+
 Ingestion extracts text (with OCR fallback), chunks it, embeds each chunk with a
 local `sentence-transformers/all-MiniLM-L6-v2` model, and stores vectors plus
 metadata in a Qdrant collection. Stop any process holding the embedded store
@@ -23,6 +30,12 @@ metadata in a Qdrant collection. Stop any process holding the embedded store
 
 ```bash
 python -m app.data.ingestion --source-dir app/docs --qdrant-path ./app/qdrant_db --recreate-collection
+```
+
+The equivalent Windows PowerShell command is:
+
+```powershell
+py -m app.data.ingestion --source-dir app/docs --qdrant-path .\app\qdrant_db --recreate-collection
 ```
 
 `--qdrant-path` always uses the local embedded database. Extraction and chunking
@@ -39,6 +52,17 @@ python3 mint_tokens.py        # prints one JWT per mock user
 uvicorn app.main:app --reload
 ```
 
+On Windows PowerShell, use:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+Copy-Item .env.example .env       # then set JWT_SECRET (>= 32 chars) and an LLM key
+py mint_tokens.py                  # prints one JWT per mock user
+py -m uvicorn app.main:app --reload
+```
+
 Open `http://127.0.0.1:8000/` — the server also serves `test_client.html`, so it
 uses the same local origin and the default `ws://localhost:8000/ws/chat`. Paste
 a token and chat. The LLM provider is pluggable (OpenRouter / Groq / Gemini / Ollama). The
@@ -51,12 +75,23 @@ The generation model is selected for grounded response quality and streaming;
 the smaller non-thinking Qwen instruct model is used for the router's narrow
 JSON classification task. Override the provider and model through environment
 settings where supported.
+
+The selected provider is OpenRouter because it offers hosted streaming access
+to the chosen Llama model without requiring a local model runtime. The thin
+provider interface also supports Groq, Gemini, and Ollama.
+
 ## 3. How to test
 
 Run the automated suite:
 
 ```bash
 pytest # (or) .venv/bin/python -m pytest
+```
+
+On Windows PowerShell, run:
+
+```powershell
+py -m pytest
 ```
 
 Or drive the WebSocket by hand. The endpoint is `ws://localhost:8000/ws/chat`
@@ -123,6 +158,13 @@ scope:
 }
 ```
 
+This example represents the executive test user `exec-003`: level 3 with
+`exec` as the primary department. The `hr` entry is included because HR
+content is available to every user.
+
+Each indexed chunk stores these payload fields explicitly:
+`department`, `access_level`, `source_file`, and `page`.
+
 `Retriever.search` passes that filter straight into `QdrantStore.search`, so
 unauthorized chunks are never returned at all. Doing it in the DB layer matters
 for two reasons: it is defense-in-depth (even if downstream code is wrong, the
@@ -162,9 +204,10 @@ the Qdrant query also run via `asyncio.to_thread`.
 
 ## 7. One thing you would improve given more time
 
-Replace the mock Excel-backed employee data with an authenticated HR-system
-integration, and build a retrieval evaluation set from representative policy
-questions so changes to chunking and prompts can be measured.
+- Conversation memory with safeguards for sensitive employee data.
+- Make RAG pipeline more robust for long form documents - re-ranker, metadata filtering caching
+- Improved OCR handling and document versioning
+- Guardrails implementation
 
 ## 8. One tradeoff you made and why
 

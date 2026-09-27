@@ -1,0 +1,2 @@
+{"ts": "2026-09-26T13:56:22.460+00:00", "turn_id": "92e4c48aa1b2", "event": "turn.start", "query": "hello"}
+{"ts": "2026-09-26T13:56:22.460+00:00", "turn_id": "92e4c48aa1b2", "event": "tool.selected", "tool": "policy_rag"}
